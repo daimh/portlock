@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -e
+trap "exit 1" TERM
+function helpme {
+	if [[ "$1" != "" ]]
+	then
+		echo -e "$1" 1>&2
+	else
+		cat /proc/$$/fd/255 | sed -n '/^#HELPME_START/,/^#HELPME_END/p' | grep -v "^#HELPME_" | grep -e "	-\|^#" | grep -- "$(echo $OPT_SHORT | sed -e "s/://g" | sed -e "s/\(.\)/\t-\1 \\\|/g" | sed -e "s/$/^#$COMMAND\t\\\|^#[A-Z]/" )" | sed -e "s/^#$COMMAND\t/\t/; s/^#//" 1>&2
+	fi
+	PGID=$(cut -d ' ' -f 5 /proc/$$/stat)
+	kill -s TERM -- -$PGID
+}
+RELEASE="NO"
+OPT_SHORT="hVvr"
+OPT_LONG="help,version,verbose,rm"
+OPTS=$(getopt -o $OPT_SHORT --long $OPT_LONG -n "$(basename $0)" -- "$@")
+eval set -- "$OPTS"
+while :
+do
+	case "$1" in
+#HELPME_START
+#NAME
+#	portlock - lock random port for listening
+#SYNOPSIS
+#	portlock [OPTION]... FILE
+#EXAMPLE
+#	portlock port_file
+#DESCRIPTION
+		-h | --help)	#print help information
+			helpme ;;
+		-V | --version) #print version information
+			helpme "20220216" ;;
+		-v | --verbose)	#verbose output
+			set -x
+			shift ;;
+		-r | --rm)	#release a locked port, and remove lock files
+			RELEASE="YES"
+			shift ;;
+		--)
+			shift 1 ;;
+		*)
+			break ;;
+#AUTHOR
+#	Manhong Dai
+#	Copyright (C) 2022 Free Software Foundation, Inc. License GPLv3+: GNU
+#	GPL version 3 or later <https://gnu.org/licenses/gpl.html>.
+#	This is free software: you are free to change and redistribute it.
+#	There is NO WARRANTY, to the extent permitted by law.
+#HELPME_END
+	esac
+done
+[ $# -ge 1 ] || helpme "ERR-01: missing operand"
+FILE=$1
+[ -n "$FILE" ] || helpme "ERR-02: File cannot be empty"
+if [ "$RELEASE" = "YES" ]
+then
+	PORT=$(cat $FILE)
+	if [ -O /tmp/portlock.$PORT ] && diff <(realpath $FILE) /tmp/portlock.$PORT &> /dev/null
+	then
+		! fuser $PORT/tcp || helpme "ERR-04: port is in use"
+		rm /tmp/portlock.$PORT
+	fi
+	rm $FILE
+	exit
+fi
+#"$RELEASE" = "NO"
+while :
+do
+	if [ ! -f $FILE ] 
+	then
+		if which python > /dev/null
+		then
+			python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()' > $FILE
+		elif which nc timeout &> /dev/null
+		then
+			echo $(timeout 0.1s nc -v -l 0 2>&1) | cut -d " " -f 4 > $FILE 
+		else
+			helpme "ERR-03: missing either python or nc and timeout in PATH"
+		fi
+	fi
+	PORT=$(cat $FILE)
+	if [ ! -e /tmp/portlock.$PORT ] 
+	then
+		realpath $FILE > /tmp/portlock.$PORT 
+		echo "Locked tcp port number $PORT"
+		break
+	elif [ -O /tmp/portlock.$PORT ] && diff <(realpath $FILE) /tmp/portlock.$PORT &> /dev/null
+	then 
+		break
+	fi
+	rm $FILE
+	sleep 0.1
+done
